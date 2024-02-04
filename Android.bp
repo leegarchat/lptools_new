@@ -1,8 +1,9 @@
 cc_binary {
-    name: "lptools",
+    name: "lptools_new",
     cflags: [
         "-Werror",
         "-Wextra",
+        "-fexceptions",
     ],
     device_supported: true,
     shared_libs: [
@@ -29,11 +30,12 @@ cc_binary {
 
 // See commented section below for building lptools_static as a fully static executable
 cc_binary {
-    name: "lptools_static",
+    name: "lptools_new_static",
     cflags: [
         "-Werror",
         "-Wextra",
         "-DLPTOOLS_STATIC",
+        "-fexceptions",
     ],
     device_supported: true,
 shared_libs: [
@@ -63,7 +65,7 @@ shared_libs: [
 // in external/boringssl/Android.bp. Then you can build lptools_static fully standalone.
 //
 // cc_binary {
-//     name: "lptools_static",
+//     name: "lptools_new_static",
 //     cflags: [
 //         "-Werror",
 //         "-Wextra",
