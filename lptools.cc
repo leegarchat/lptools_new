@@ -1,34 +1,21 @@
-/*
- * Copyright (C) 2020 Pierre-Hugues Husson <phh@phh.me>
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *      http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+#include <iostream>
+#include <vector>
+#include <string>
+#include <fstream>
+#include <sys/stat.h>
+#include <cmath>
+
+#include <optional>
+#include <regex>
+#include <chrono>
 
 #include <getopt.h>
 #include <inttypes.h>
 #include <sys/mount.h>
-#include <sys/stat.h>
 #include <sys/statvfs.h>
 #include <sys/types.h>
 #include <sysexits.h>
 #include <unistd.h>
-
-#include <iostream>
-#include <optional>
-#include <regex>
-#include <string>
-#include <vector>
-#include <chrono>
 
 #include <android-base/file.h>
 #include <android-base/parseint.h>
@@ -40,7 +27,6 @@
 #include <liblp/liblp.h>
 #include <fs_mgr_dm_linear.h>
 #include <libdm/dm.h>
-
 #ifndef LPTOOLS_STATIC
 #include <android/hardware/boot/1.1/IBootControl.h>
 #include <android/hardware/boot/1.1/types.h>
@@ -48,179 +34,276 @@
 
 using namespace android;
 using namespace android::fs_mgr;
-
+using namespace std;
 using namespace std::literals;
 
-// https://cs.android.com/android/platform/superproject/+/android-13.0.0_r3:system/core/fastboot/device/utility.cpp;l=202
-bool UpdateAllPartitionMetadata(const std::string& super_name,
-                                const android::fs_mgr::LpMetadata& metadata) {
-    // https://github.com/phhusson/vendor_lptools/blob/ff09b3f150cb0bceaf7c3bd428bfec812d7440bc/lptools.cc#L82
-    size_t num_slots = 2;//pt->geometry.metadata_slot_count;
 
+bool UpdateAllPartitionMetadata(const string& super_name,
+                                const android::fs_mgr::LpMetadata& metadata,
+                                const uint32_t user_slot) {
     bool ok = true;
-    for (size_t i = 0; i < num_slots; i++) {
-        ok &= UpdatePartitionTable(super_name, metadata, i);
-    }
+    ok &= UpdatePartitionTable(super_name, metadata, user_slot);
     return ok;
 }
 
-// https://cs.android.com/android/platform/superproject/+/android-13.0.0_r3:system/core/fastboot/device/utility.cpp;l=96
-std::optional<std::string> FindPhysicalPartition(const std::string& name) {
-    if (android::base::StartsWith(name, "../") || name.find("/../") != std::string::npos) {
-        return {};
-    }
-    std::string path = "/dev/block/by-name/" + name;
-    if (access(path.c_str(), W_OK) < 0) {
-        return {};
-    }
-    return path;
-}
-
-// https://cs.android.com/android/platform/superproject/+/android-13.0.0_r3:system/core/fastboot/device/utility.cpp;l=217
-std::string GetSuperSlotSuffix(const std::string& partition_name) {
-    std::string current_slot_suffix = ::android::base::GetProperty("ro.boot.slot_suffix", "");
-    uint32_t current_slot_number = SlotNumberForSlotSuffix(current_slot_suffix);
-    std::string super_partition = fs_mgr_get_super_partition_name(current_slot_number);
-    if (GetPartitionSlotSuffix(super_partition).empty()) {
-        return current_slot_suffix;
-    }
-
-    std::string slot_suffix = GetPartitionSlotSuffix(partition_name);
-    if (!slot_suffix.empty()) {
-        return slot_suffix;
-    }
-    return current_slot_suffix;
-}
-
-// https://cs.android.com/android/platform/superproject/+/android-13.0.0_r3:system/core/fastboot/device/commands.cpp;l=440
 class PartitionBuilder {
 public:
-    explicit PartitionBuilder();
-
+    explicit PartitionBuilder(string user_suffix, bool user_slot, string user_super);
+    
     bool Write();
     bool Valid() const { return !!builder_; }
     MetadataBuilder* operator->() const { return builder_.get(); }
 
 private:
-    std::string super_device_;
+    string super_device_;
+    string slot_suffix_;
     uint32_t slot_number_;
     std::unique_ptr<MetadataBuilder> builder_;
 };
 
-PartitionBuilder::PartitionBuilder() {
-    auto partition_name = "system" + ::android::base::GetProperty("ro.boot.slot_suffix", "");
-    std::string slot_suffix = GetSuperSlotSuffix(partition_name);
-    slot_number_ = android::fs_mgr::SlotNumberForSlotSuffix(slot_suffix);
-    auto super_device = FindPhysicalPartition(fs_mgr_get_super_partition_name(slot_number_));
-    if (!super_device) {
-        return;
-    }
-    super_device_ = *super_device;
+PartitionBuilder::PartitionBuilder(string user_suffix, bool user_slot, string user_super) {
+    slot_number_ = user_slot;
+    slot_suffix_ = user_suffix;
+    auto super_device = std::move(user_super);
+    super_device_ = std::move(super_device);
     builder_ = MetadataBuilder::New(super_device_, slot_number_);
 }
-
+bool saveToDisk(PartitionBuilder builder) {
+    return builder.Write();
+}
 bool PartitionBuilder::Write() {
     auto metadata = builder_->Export();
     if (!metadata) {
         return false;
     }
-    return UpdateAllPartitionMetadata(super_device_, *metadata.get());
+    return UpdateAllPartitionMetadata(super_device_, *metadata.get(), slot_number_);
 }
 
-bool saveToDisk(PartitionBuilder builder) {
-    return builder.Write();
-}
 
-inline bool ends_with(std::string const & value, std::string const & ending)
+bool fileOrBlockDeviceExists(const string& path) {
+    std::ifstream file(path);
+    return file.good();
+}
+bool isDirectory(const string& path) {
+    struct stat path_stat;
+    stat(path.c_str(), &path_stat);
+    return S_ISDIR(path_stat.st_mode);
+}
+inline bool ends_with(string const & value, string const & ending)
 {
     if (ending.size() > value.size()) return false;
     return std::equal(ending.rbegin(), ending.rend(), value.rbegin());
 }
 
-std::string findGroup(PartitionBuilder& builder) {
-    auto groups = builder->ListGroups();
-
-    auto partitionName = "system" + ::android::base::GetProperty("ro.boot.slot_suffix", "");
-    for(auto groupName: groups) {
-        auto partitions = builder->ListPartitionsInGroup(groupName);
-        for (const auto& partition : partitions) {
-            if(partition->name() == partitionName) {
-                return groupName;
-            }
-        }
-    }
-
-    std::string maxGroup = "";
-    uint64_t maxGroupSize = 0;
-    for(auto groupName: groups) {
-        auto group = builder->FindGroup(groupName);
-        if(group->maximum_size() > maxGroupSize) {
-            maxGroup = groupName;
-            maxGroupSize = group->maximum_size();
-        }
-    }
-
-    return maxGroup;
+void Help_menu() {
+    std::cout << "Basic configuration:\n\n";
+    std::cout << "  --suffix <_a|a|0|_b|b|1>\n";
+    std::cout << "      By default, it will be taken from ro.boot.slot_suffix\n\n";
+    std::cout << "  --slot <0|1>\n";
+    std::cout << "      Slot 0 will be used by default\n";
+    std::cout << "  --super </path/to/super>\n";
+    std::cout << "      By default, the standard path /dev/block/by-name/super will be used\n\n";
+    std::cout << "  --group <group_name_in_super>\n";
+    std::cout << "      By default, the relative section of system + --suffix in the specified --slot will be searched\n\n";
+    std::cout << "Please use one of the following options:\n";
+    std::cout << "  --create <partition name> <partition size>\n";
+    std::cout << "  --remove <partition name>\n";
+    std::cout << "  --resize <partition name> <newsize>\n";
+    std::cout << "  --replace <original partition name> <new partition name>\n";
+    std::cout << "  --map <partition name>\n";
+    std::cout << "  --unmap <partition name>\n";
+    std::cout << "  --free\n";
+    std::cout << "  --unlimited-group\n";
+    std::cout << "  --clear-cow\n";
+    std::cout << "  --get-info\n\n";
+    exit(1);
 }
 
-int main(int argc, char **argv) {
-    if(argc<=1) {
-        std::cerr << "Usage: " << argv[0] << " <create|remove|resize|replace|map|unmap|free|unlimited-group|clear-cow>" << std::endl;
+int main(int argc, char* argv[]) {
+    std::vector<string> arguments(argv + 1, argv + argc);
+
+    int slotValue = 0;
+    std::string suffixValue = ::android::base::GetProperty("ro.boot.slot_suffix", "");
+    std::string superPath = "/dev/block/by-name/super";
+    std::string groupValue;
+    
+    for (size_t i = 0; i < arguments.size();) {
+        if (arguments[i] == "--slot") {
+            if (i + 1 < arguments.size()) {
+                string slotCandidate = arguments[i + 1];
+                if (slotCandidate == "0" || slotCandidate == "1") {
+                    slotValue = std::stoi(slotCandidate);
+                    arguments.erase(arguments.begin() + i, arguments.begin() + i + 2);
+                } else {
+                    std::cerr << "Error: Invalid value for --slot. Should be '0' or '1'." << std::endl;
+                    return 1;
+                }
+            } else {
+                std::cerr << "Error: --slot requires a value. Should be '0' or '1'." << std::endl;
+                return 1;
+            }
+        } else if (arguments[i] == "--suffix") {
+            if (i + 1 < arguments.size()) {
+                string suffixCandidate = arguments[i + 1];
+                if (suffixCandidate == "_a" || suffixCandidate == "a" || suffixCandidate == "0") {
+                    suffixValue = "_a";
+                } else if (suffixCandidate == "_b" || suffixCandidate == "b" || suffixCandidate == "1") {
+                    suffixValue = "_b";
+                } else {
+                    std::cerr << "Error: Invalid value for --suffix. Should be '_a', 'a', '0', '_b', 'b', or '1'." << std::endl;
+                    return 1;
+                }
+                arguments.erase(arguments.begin() + i, arguments.begin() + i + 2);
+            } else {
+                std::cerr << "Error: --suffix requires a value." << std::endl;
+                return 1;
+            }
+        } else if (arguments[i] == "--group") {
+            if (i + 1 < arguments.size()) {
+                groupValue = arguments[i + 1];
+                // Проверка, что строка для --group не начинается с --
+                if (groupValue.compare(0, 2, "--") == 0) {
+                    std::cerr << "Error: The value for --group should not start with '--'." << std::endl;
+                    return 1;
+                }
+
+                
+                arguments.erase(arguments.begin() + i, arguments.begin() + i + 2);
+            } else {
+                std::cerr << "Error: --group requires a value." << std::endl;
+                return 1;
+            }
+        } else if (arguments[i] == "--super") {
+            if (i + 1 < arguments.size()) {
+                superPath = arguments[i + 1];
+                if (!fileOrBlockDeviceExists(superPath)) {
+                    std::cerr << "Error: The specified path for --super does not exist: " << superPath << std::endl;
+                    return 1;
+                } else if (isDirectory(superPath)) {
+                    std::cerr << "Error: The specified path for --super is a directory: " << superPath << std::endl;
+                    return 1;
+                }
+                arguments.erase(arguments.begin() + i, arguments.begin() + i + 2);
+            } else {
+                std::cerr << "Error: --super requires a value." << std::endl;
+                return 1;
+            }
+        } else {
+            ++i;
+        }
+    }
+    if (!fileOrBlockDeviceExists(superPath)) {
+        std::cerr << "Super section along the standard path" << superPath << " not found, indicate the independent path -SUPER </path/to/super>" << std::endl;
+        return 1;
+    }
+    if (arguments.size() < 1) {
+        Help_menu();
         exit(1);
     }
-    PartitionBuilder builder;
-    auto group = findGroup(builder);
-    std::cout << "Best group seems to be " << group << std::endl;
+    PartitionBuilder builder(suffixValue, slotValue, superPath);
+    if (groupValue.empty()) {
+        auto groups = builder->ListGroups();
+        auto partitionName = "system" + suffixValue;
+        for (auto groupName : groups) {
+            auto partitions = builder->ListPartitionsInGroup(groupName);
+            for (const auto& partition : partitions) {
+                if (partition->name() == partitionName) {
+                    groupValue = groupName;
+                    goto outerLoopEnd;
+                }
+            }
+        }
+    } else {
+        auto groups = builder->ListGroups();
+        
+        // Проверка существования groupValue в списке groups
+        if (std::find(groups.begin(), groups.end(), groupValue) == groups.end()) {
+            std::cerr << "Error: Specified group '" << groupValue << "' does not exist." << std::endl;
+            return 1;
+        }
+    }
 
-    if(strcmp(argv[1], "create") == 0) {
-        if(argc != 4) {
-            std::cerr << "Usage: " << argv[0] << " create <partition name> <partition size>" << std::endl;
-            exit(1);
+    outerLoopEnd:
+
+    std::cout << "Slot: " << slotValue << std::endl;
+    std::cout << "Suffix: " << suffixValue << std::endl;
+    std::cout << "Path to super: " << superPath << std::endl;
+    std::cout << "Group: " << groupValue << std::endl;
+    std::cout << "Arguments:";
+
+    for (const auto& arg : arguments) {
+        std::cout << " " << arg;
+    }
+    std::cout << std::endl;
+
+    if (arguments[0] == "--create" ) {
+        if (arguments.size() != 3) {
+            std::cout << "--create <partition name> <partition size>" << std::endl;
+            return 1;
         }
-        auto partName = argv[2];
-        auto size = strtoll(argv[3], NULL, 0);
-        auto partition = builder->FindPartition(partName);
-        if(partition != nullptr) {
-            std::cerr << "Partition " << partName << " already exists." << std::endl;
-            exit(1);
-        }
-        partition = builder->AddPartition(partName, group, 0);
-        if(partition == nullptr) {
-            std::cerr << "Failed to add partition" << std::endl;
-            exit(1);
-        }
-        auto result = builder->ResizePartition(partition, size);
-        std::cout << "Growing partition " << result << std::endl;
-        if(!result) {
-            std::cerr << "Not enough space to resize partition" << std::endl;
-            exit(1);
-        }
-        if(!saveToDisk(std::move(builder))) {
-            std::cerr << "Failed to write partition table" << std::endl;
-            exit(1);
+        char* end;
+        auto partitionSize = strtoll(arguments[2].c_str(), &end, 0);
+
+        // Проверяем, были ли ошибки при преобразовании.
+        if (errno == ERANGE || *end != '\0') {
+            std::cerr << "Error: Invalid or out-of-range number." << std::endl;
+            return 1;
         }
 
-        std::string dmPath;
-        CreateLogicalPartitionParams params {
-                .block_device = "/dev/block/by-name/super",
-                .metadata_slot = 0,
-                .partition_name = partName,
-                .timeout_ms = std::chrono::milliseconds(10000),
-                .force_writable = true,
-        };
-        auto dmCreateRes = android::fs_mgr::CreateLogicalPartition(params, &dmPath);
-        if(!dmCreateRes) {
-            std::cerr << "Could not map partition: " << partName << std::endl;
+        // Проверяем, что это число больше или равно нулю.
+        if (partitionSize >= 0) {
+
+            
+            std::cout << "Create functions " << partitionSize << std::endl;
+            string partName = arguments[1]; 
+            cout << groupValue << endl;
+            auto partition = builder->FindPartition(partName);
+            if(partition != nullptr) {
+                std::cerr << "Partition " << partName << " already exists." << std::endl;
+                exit(1);
+            }
+
+            partition = builder->AddPartition(partName, groupValue, 0);
+            cout << partition << endl;
+            if(partition == nullptr) {
+                std::cerr << "Failed to add partition" << std::endl;
+                exit(1);
+            }
+            auto result = builder->ResizePartition(partition, partitionSize);
+            std::cout << "Growing partition " << result << std::endl;
+            if(!result) {
+                std::cerr << "Not enough space to resize partition" << std::endl;
+                exit(1);
+            }
+            if(!saveToDisk(std::move(builder))) {
+                std::cerr << "Failed to write partition table" << std::endl;
+                exit(1);
+            }
+            string dmPath;
+            CreateLogicalPartitionParams params {
+                    .block_device = superPath,
+                    .metadata_slot = slotValue,
+                    .partition_name = partName,
+                    .timeout_ms = std::chrono::milliseconds(10000),
+                    .force_writable = true,
+            };
+            auto dmCreateRes = android::fs_mgr::CreateLogicalPartition(params, &dmPath);
+            if(!dmCreateRes) {
+                std::cerr << "Could not map partition: " << partName << std::endl;
+                exit(1);
+            }    
+            std::cout << "Creating dm partition for " << partName << " answered " << dmCreateRes << " at " << dmPath << std::endl;
+            return 0;
+        } else {
+            std::cout << "The size of the section should be larger or equal to zero." << std::endl;
             exit(1);
         }
-        std::cout << "Creating dm partition for " << partName << " answered " << dmCreateRes << " at " << dmPath << std::endl;
-        exit(0);
-    } else if(strcmp(argv[1], "remove") == 0) {
-        if(argc != 3) {
-            std::cerr << "Usage: " << argv[0] << " remove <partition name>" << std::endl;
+    } else if (arguments[0] == "--remove" ) {
+        if (arguments.size() != 2) {
+            std::cout << "--remove <partition name>" << std::endl;
             exit(1);
         }
-        auto partName = argv[2];
+        string partName = arguments[1];
         auto dmState = android::dm::DeviceMapper::Instance().GetState(partName);
         if(dmState == android::dm::DmDeviceState::ACTIVE) {
             android::fs_mgr::DestroyLogicalPartition(partName);
@@ -230,57 +313,83 @@ int main(int argc, char **argv) {
             std::cerr << "Failed to write partition table" << std::endl;
             exit(1);
         }
+        cout << "Successful removal of the section: " << partName << endl;
         exit(0);
-    } else if(strcmp(argv[1], "resize") == 0) {
-        if(argc != 4) {
-            std::cerr << "Usage: " << argv[0] << " resize <partition name> <newsize>" << std::endl;
+    } else if (arguments[0] == "--resize" ) {
+        if (arguments.size() != 3) {
+            std::cout << "--resize <partition name> <newsize>" << std::endl;
             exit(1);
         }
-        auto partName = argv[2];
-        auto size = strtoll(argv[3], NULL, 0);
-        auto partition = builder->FindPartition(partName);
-        if(partition == nullptr) {
-            std::cerr << "Partition does not exist" << std::endl;
-            exit(1);
-        }
-        auto result = builder->ResizePartition(partition, size);
-        if(!result) {
-            std::cerr << "Not enough space to resize partition" << std::endl;
-            exit(1);
-        }
-        if(!saveToDisk(std::move(builder))) {
-            std::cerr << "Failed to write partition table" << std::endl;
-            exit(1);
-        }
-        std::cout << "Resizing partition " << result << std::endl;
-        exit(0);
-    } else if(strcmp(argv[1], "replace") == 0) {
-        if(argc != 4) {
-            std::cerr << "Usage: " << argv[0] << " replace <original partition name> <new partition name>" << std::endl;
-            std::cerr << "This will delete <new partition name> and rename <original partition name> to <new partition name>" << std::endl;
-            exit(1);
-        }
-        auto src = argv[2];
-        auto dst = argv[3];
-        auto srcPartition = builder->FindPartition(src);
-        if(srcPartition == nullptr) {
-            srcPartition = builder->FindPartition(src + ::android::base::GetProperty("ro.boot.slot_suffix", ""));
-        }
-        if(srcPartition == nullptr) {
-            std::cerr << "Original partition does not exist" << std::endl;
-            exit(1);
-        }
-        auto dstPartition = builder->FindPartition(dst);
-        if(dstPartition == nullptr) {
-            dstPartition = builder->FindPartition(dst + ::android::base::GetProperty("ro.boot.slot_suffix", ""));
-        }
-        std::string dstPartitionName = dst;
-        if(dstPartition != nullptr) {
-            dstPartitionName = dstPartition->name();
-        }
-        std::vector<std::unique_ptr<Extent>> originalExtents;
+        string partName = arguments[1];
+        char* end;
+        auto partitionSize = strtoll(arguments[2].c_str(), &end, 0);
 
-        const auto& extents = srcPartition->extents();
+        // Проверяем, были ли ошибки при преобразовании.
+        if (errno == ERANGE || *end != '\0') {
+            std::cerr << "Error: Invalid or out-of-range number." << std::endl;
+            return 1;
+        }
+        if (partitionSize >= 0) {
+            bool is_map_need = false;
+            auto partition = builder->FindPartition(partName);
+            if(partition == nullptr) {
+                std::cerr << "Partition does not exist" << std::endl;
+                exit(1);
+            }
+            auto dmState = android::dm::DeviceMapper::Instance().GetState(partName);
+            if(dmState == android::dm::DmDeviceState::ACTIVE) {
+                if (android::fs_mgr::DestroyLogicalPartition(partName)) {
+                    is_map_need = true;
+                }
+                
+            }
+            auto result = builder->ResizePartition(partition, partitionSize);
+            if(!result) {
+                std::cerr << "Not enough space to resize partition" << std::endl;
+                exit(1);
+            }
+            if(!saveToDisk(std::move(builder))) {
+                std::cerr << "Failed to write partition table" << std::endl;
+                exit(1);
+            }
+            std::cout << "Resizing partition " << result << std::endl;
+            if (is_map_need) {
+                string dmPath;
+                CreateLogicalPartitionParams params {
+                        .block_device = superPath,
+                        .metadata_slot = slotValue,
+                        .partition_name = partName,
+                        .timeout_ms = std::chrono::milliseconds(10000),
+                        .force_writable = true,
+                };
+                auto dmCreateRes = android::fs_mgr::CreateLogicalPartition(params, &dmPath);
+                if(!dmCreateRes) {
+                    std::cerr << "Could not map partition: " << partName << std::endl;
+                    exit(1);
+                }
+                std::cout << "Creating dm partition for " << partName << " answered " << dmCreateRes << " at " << dmPath << std::endl;
+            }
+            cout << "Successful change in section for the section:" << partName << endl;
+            exit(0);
+        } else {
+            std::cout << "The size of the section should be larger or equal to zero." << std::endl;
+            exit(1);
+        }
+    } else if (arguments[0] == "--replace" ) {
+        if (arguments.size() != 3) {
+            std::cout << "--replace <original partition name> <new partition name>" << std::endl;
+            exit(1);
+        }
+        auto OriginalPartName = arguments[1];
+        auto NewPartName = arguments[2];
+        auto OriginalPartition = builder->FindPartition(OriginalPartName);
+        if(OriginalPartition == nullptr) {
+            std::cerr << "The original section was not found, maybe you meant " << OriginalPartName << suffixValue << "?" << std::endl;
+            exit(1);
+        }
+        auto NewPartition = builder->FindPartition(NewPartName);
+        std::vector<std::unique_ptr<Extent>> originalExtents;
+        const auto& extents = OriginalPartition->extents();
         for(unsigned i=0; i<extents.size(); i++) {
             const auto& extend = extents[i];
             auto linear = extend->AsLinearExtent();
@@ -291,32 +400,32 @@ int main(int argc, char **argv) {
                 auto copyZero = std::make_unique<ZeroExtent>(extend->num_sectors());
                 originalExtents.push_back(std::move(copyZero));
             }
+            builder->RemovePartition(OriginalPartName);
+            builder->RemovePartition(NewPartName);
+            auto NewPartition = builder->AddPartition(NewPartName, groupValue, 0);
+            if(NewPartition == nullptr) {
+                std::cerr << "Failed to add partition" << std::endl;
+                exit(1);
+            }
+            for(auto&& extent: originalExtents) {
+                NewPartition->AddExtent(std::move(extent));
+            }
+            if(!saveToDisk(std::move(builder))) {
+                std::cerr << "Failed to write partition table" << std::endl;
+                exit(1);
+            }
         }
-        builder->RemovePartition(srcPartition->name());
-        builder->RemovePartition(dstPartitionName);
-        auto newDstPartition = builder->AddPartition(dstPartitionName, group, 0);
-        if(newDstPartition == nullptr) {
-            std::cerr << "Failed to add partition" << std::endl;
+
+    } else if (arguments[0] == "--map" ) {
+        if (arguments.size() != 2) {
+            std::cout << "--map <partition name>" << std::endl;
             exit(1);
         }
-        for(auto&& extent: originalExtents) {
-            newDstPartition->AddExtent(std::move(extent));
-        }
-        if(!saveToDisk(std::move(builder))) {
-            std::cerr << "Failed to write partition table" << std::endl;
-            exit(1);
-        }
-        exit(0);
-    } else if(strcmp(argv[1], "map") == 0) {
-        if(argc != 3) {
-            std::cerr << "Usage: " << argv[0] << " map <partition name>" << std::endl;
-            exit(1);
-        }
-        auto partName = argv[2];
-        std::string dmPath;
+        string partName = arguments[1];
+        string dmPath;
         CreateLogicalPartitionParams params {
-                .block_device = "/dev/block/by-name/super",
-                .metadata_slot = 0,
+                .block_device = superPath,
+                .metadata_slot = slotValue,
                 .partition_name = partName,
                 .timeout_ms = std::chrono::milliseconds(10000),
                 .force_writable = true,
@@ -328,12 +437,12 @@ int main(int argc, char **argv) {
         }
         std::cout << "Creating dm partition for " << partName << " answered " << dmCreateRes << " at " << dmPath << std::endl;
         exit(0);
-    } else if(strcmp(argv[1], "unmap") == 0) {
-        if(argc != 3) {
-            std::cerr << "Usage: " << argv[0] << " unmap <partition name>" << std::endl;
+    } else if (arguments[0] == "--unmap" ) {
+        if (arguments.size() != 2) {
+            std::cout << "--unmap <partition name>" << std::endl;
             exit(1);
         }
-        auto partName = argv[2];
+        string partName = arguments[1];
         auto dmState = android::dm::DeviceMapper::Instance().GetState(partName);
         if(dmState == android::dm::DmDeviceState::ACTIVE) {
             if (!android::fs_mgr::DestroyLogicalPartition(partName)) {
@@ -341,22 +450,25 @@ int main(int argc, char **argv) {
                 exit(1);
             }
         }
+        cout << "Successful remote Mapping DM section: " << partName << endl;
         exit(0);
-    } else if(strcmp(argv[1], "free") == 0) {
-        if(argc != 2) {
-            std::cerr << "Usage: " << argv[0] << " free" << std::endl;
+    } else if (arguments[0] == "--free" ) {
+        if (arguments.size() != 1) {
+            std::cout << "--free" << std::endl;
             exit(1);
         }
-        auto groupO = builder->FindGroup(group);
-        uint64_t maxSize = groupO->maximum_size();
 
+        auto group_number = builder->FindGroup(groupValue);
+        uint64_t maxSize = group_number->maximum_size();
         uint64_t total = 0;
-        auto partitions = builder->ListPartitionsInGroup(group);
+        auto partitions = builder->ListPartitionsInGroup(groupValue);
         for (const auto& partition : partitions) {
+            float size_mb = std::round((partition->BytesOnDisk() / 1024 / 1024) * 10) / 10.0; 
+            std::cout << partition->name() << ":" << partition->BytesOnDisk() << ":" << size_mb << "mb" << std::endl;
             total += partition->BytesOnDisk();
         }
-
         uint64_t groupAllocatable = maxSize - total;
+        // std::cout << builder->AllocatableSpace() << ":" << builder->UsedSpace() << std::endl;
         uint64_t superFreeSpace = builder->AllocatableSpace() - builder->UsedSpace();
         if(groupAllocatable > superFreeSpace || maxSize == 0)
             groupAllocatable = superFreeSpace;
@@ -364,11 +476,34 @@ int main(int argc, char **argv) {
         printf("Free space: %" PRIu64 "\n", groupAllocatable);
 
         exit(0);
-    } else if(strcmp(argv[1], "unlimited-group") == 0) {
-        builder->ChangeGroupSize(group, 0);
+
+    } else if (arguments[0] == "--get_info" ) {
+        if (arguments.size() != 1) {
+            std::cout << "--get_info" << std::endl;
+            exit(1);
+        }
+        
+        auto groups = builder->ListGroups();
+        for(auto groupName: groups) {
+            auto partitions = builder->ListPartitionsInGroup(groupName);
+            if ( groupName == groupValue ) {
+                cout << "GroupInSuper: " << groupName << ":Usage: " << builder->UsedSpace() << ":TotalSpace: " << builder->AllocatableSpace() << endl;
+                for (const auto& partition : partitions) {
+                    cout << "NamePartInGroup: " << partition->name() << ":Size: " << partition->BytesOnDisk() << endl;
+                }
+            }
+            
+        }
+
+    } else if (arguments[0] == "--unlimited-group" ) {
+        if (arguments.size() != 1) {
+            std::cout << "--unlimited-group" << std::endl;
+            exit(1);
+        }
+        builder->ChangeGroupSize(groupValue, 0);
         saveToDisk(std::move(builder));
         return 0;
-    } else if(strcmp(argv[1], "clear-cow") == 0) {
+    } else if (arguments[0] == "--clear-cow" ) {
 #ifndef LPTOOLS_STATIC
         // Ensure this is a V AB device, and that no merging is taking place (merging? in gsi? uh)
         auto svc1_1 = ::android::hardware::boot::V1_1::IBootControl::tryGetService();
@@ -400,6 +535,10 @@ int main(int argc, char **argv) {
             exit(1);
         }
         return 0;
+
+    } else {
+        Help_menu();
+        exit(1);
     }
 
     return 0;
