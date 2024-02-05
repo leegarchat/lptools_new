@@ -185,10 +185,5 @@ The `lptools_new_static` binary provides various functionalities for managing An
 ```
 **Note:** Ensure you have the necessary privileges to perform the specified operations.
 
-For additional information and usage examples, refer to the help menu:
-
-```bash
-./lptools_new_static --get-info
-```
 **Caution:** Please be aware that incorrect usage of the `lptools_new_static` binary may lead to data loss or system instability. Exercise caution and ensure proper understanding of the provided options before proceeding.
 
