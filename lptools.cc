@@ -463,11 +463,18 @@ int main(int argc, char* argv[]) {
         uint64_t total = 0;
         auto partitions = builder->ListPartitionsInGroup(groupValue);
         for (const auto& partition : partitions) {
-            float size_mb = std::round((partition->BytesOnDisk() / 1024 / 1024) * 10) / 10.0; 
-            std::cout << partition->name() << ":" << partition->BytesOnDisk() << ":" << size_mb << "mb" << std::endl;
+            cout << "" << endl;
+            float size_mb = std::round((partition->BytesOnDisk() / 1024.0 / 1024.0) * 100) / 100.0;
+            if ( size_mb == 0 ) {
+                size_mb = std::round((partition->BytesOnDisk() / 1024.0) * 100) / 100.0;
+                std::cout << partition->name() << ":" << partition->BytesOnDisk() << ":" << size_mb << "KB" << std::endl;
+            } else {
+                std::cout << partition->name() << ":" << partition->BytesOnDisk() << ":" << size_mb << "MB" << std::endl;
+            }
             total += partition->BytesOnDisk();
         }
         uint64_t groupAllocatable = maxSize - total;
+        cout << "" << endl;
         // std::cout << builder->AllocatableSpace() << ":" << builder->UsedSpace() << std::endl;
         uint64_t superFreeSpace = builder->AllocatableSpace() - builder->UsedSpace();
         if(groupAllocatable > superFreeSpace || maxSize == 0)
@@ -477,9 +484,9 @@ int main(int argc, char* argv[]) {
 
         exit(0);
 
-    } else if (arguments[0] == "--get_info" ) {
+    } else if (arguments[0] == "--get-info" ) {
         if (arguments.size() != 1) {
-            std::cout << "--get_info" << std::endl;
+            std::cout << "--get-info" << std::endl;
             exit(1);
         }
         
@@ -487,9 +494,10 @@ int main(int argc, char* argv[]) {
         for(auto groupName: groups) {
             auto partitions = builder->ListPartitionsInGroup(groupName);
             if ( groupName == groupValue ) {
-                cout << "GroupInSuper: " << groupName << ":Usage: " << builder->UsedSpace() << ":TotalSpace: " << builder->AllocatableSpace() << endl;
+                cout << "" << endl;
+                cout << "GroupInSuper->" << groupName << " Usage->" << builder->UsedSpace() << " TotalSpace->" << builder->AllocatableSpace() << endl;
                 for (const auto& partition : partitions) {
-                    cout << "NamePartInGroup: " << partition->name() << ":Size: " << partition->BytesOnDisk() << endl;
+                    cout << "NamePartInGroup->" << partition->name() << " Size->" << partition->BytesOnDisk() << endl;
                 }
             }
             
