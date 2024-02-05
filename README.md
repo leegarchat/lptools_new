@@ -125,11 +125,7 @@ To compile the binary file from this code, you need to install Linux or WSL on W
     #!/bin/bash
     pathfile=$(realpath "$0")
     pathfile=$(dirname $pathfile)
-    echo $pathfile
     source $pathfile/build/envsetup.sh
-    if [ -f $pathfile/build/envsetup.sh ] ; then 
-        echo 1 
-    fi
     cd $pathfile
     for arch in aosp_arm-eng aosp_arm64-eng aosp_x86-eng aosp_x86_64-eng ; do
         if [ "$arch" == "aosp_arm-eng" ] ; then
@@ -141,7 +137,6 @@ To compile the binary file from this code, you need to install Linux or WSL on W
         fi
         name_arch=${arch/"-eng"/}
         name_arch=${name_arch/"aosp_"/}
-        echo "$arch"
         lunch "$arch"
         mmma external/lptools/ && {
             [ -d /mnt/c/lptools_new_binary ] || mkdir /mnt/c/lptools_new_binary
