@@ -14,7 +14,7 @@ To compile the binary file from this code, you need to install Linux or WSL on W
     For example:
 
     ```bash
-    repo init -u https://android.googlesource.com/platform/manifest -b refs/tags/android-14.0.0_r9
+    repo init -u https://android.googlesource.com/platform/manifest -b android-14.0.0_r9
     ```
 
     To view available Android versions, use:
