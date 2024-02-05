@@ -29,7 +29,7 @@ To compile the binary file from this code, you need to install Linux or WSL on W
     repo sync -j$(nproc)
     ```
 
-3. After synchronization, place `lptools.cc` and `Android.bp` in the `aosp/lptools/external` folder.
+3. After synchronization, place `lptools.cc` and `Android.bp` in the `aosp/external/lptools/` folder.
 
 4. Make changes to `aosp/external/boringssl/Android.bp` before compilation:
 
